@@ -13,20 +13,14 @@ do curso de Ciência da Computação na Universidade Federal do Ceará */
 #define MEMORYLIMIT 3
 
 typedef struct Node {
-    int* state;
+    int * state;
     int level;
+    int blank;
+    int distance;
     int move;
     struct Node* parent;
     struct Node* next;
 } Node;
-
-void printChild(Node* current) {
-    std::cout << current;
-    Node* child = current->next; int childc = 0;
-    while (child != NULL && childc < 10){ std::cout << " -> " << child; child = child->next; childc++; };
-    if (child == NULL) std::cout << "-> .";
-    std::cout << "\n" << std::endl;
-}
 
 int main(int argc, char* argv[])
 {
@@ -52,23 +46,22 @@ int main(int argc, char* argv[])
 
     static const int L = length, S = size, DSL = S - L, LL = L - 1; // alias constantes para cálculos
     static const int UP = -L, DOWN = L, LEFT = -1, RIGHT = 1; // tamanho dos movimentos
-    Node* root = new Node{ new int[size] {0}, 0, 0, NULL, NULL }; // cria o estado inicial
+    static const int BLANKVAL = S; // valor inteiro do espaço em branco para representar em um array de inteiros
+    Node* root = new Node{ new int[size], 0, 0, NULL, NULL }; // cria o estado inicial como a raíz
 
-    // lê o estado inicial número por número e salva no nó raíz
+    // lê o estado inicial número por número e salva na raíz
     std::cout << "Iniciando leitura do arquivo do puzzle..." << std::endl;
     std::ifstream puzzle(filename, std::ios::in); // reabre o arquivo, dessa vez para pegar todo o estado
     bool invalid = false;
     char digit;
     std::string num = "";
-    int value = 0, ppos = 0, antval = 0;
-    int blankPos = 0; // salva a posição do espaço em branco
-    int firstLB = 0; // salva a heurística do estado inicial para servir de Lower Bound inicial
+    int value = 0, ppos = 0;
     while (puzzle.get(digit) && !invalid) { // lê cada número do arquivo e salva em cada posição ppos de 0 a size-1
         if (digit != ',' && digit != '\n') { num += digit; } // acumula cada caractere até um dos delimitadores
         else {
             if (num == " ") {
-                value = S;  // guarda o espaço em branco como inteiro, sendo o maior valor possível + 1
-                blankPos = ppos;
+                value = BLANKVAL;  // guarda o espaço em branco como inteiro, sendo o size, que está além do intervalo [0, size-1]
+                root->blank = ppos; // guarda onde está o branco (economiza O(n2))
             }
             else {
                 try {
@@ -77,9 +70,6 @@ int main(int argc, char* argv[])
                     for (int i = 0; i < ppos; i++) { // lança erro se tiver número repetido
                         if (root->state[ppos] == value) { throw ""; }
                     }
-                    // calcula a distância de Manhattan da peça atual 
-                    antval = value - 1;
-                    firstLB += abs((antval % L) - (ppos % L)) + abs((antval / L) - (ppos / L));
                 }
                 catch (const std::exception&) {
                     invalid = true;
@@ -97,37 +87,165 @@ int main(int argc, char* argv[])
     std::cout << "Iniciando algoritmo..." << std::endl;
     Node* current = root; // a cada visita o nó atual mudará
     Node* best = NULL; // folha do melhor caminho
-    int* parentState = root->state; // usado para que o root também tenha um estado referenciável sem criar loop
 
-    int UB = INT_MAX, LB = firstLB; // limites superior (Upper Bound) e inferior (Lower Bound)
+    int UB = INT_MAX, LB = 0; // limites superior (Upper Bound) e inferior (Lower Bound)
     int RESULT = 0; // guarda um dos casos de solução (definidos nas macros no início)
     int count = 0, limit = 32 * 1024;
 
-    const auto start = std::chrono::steady_clock::now();
-    do { // laço de visita
-        if (count % 1024 == 0) std::cout << "KUnits: " << count / 1024 << std::endl;
+    const auto start = std::chrono::steady_clock::now(); // marcador de tempo de início do algoritmo a partir dos passos de laço
+    
+    // 1º passo: com a raíz; fora do laço por ter casos especiais
+    int distance = 0, currBlank = current->blank, j, val; // heurística, posição do branco, da peça de troca, e valor na posição
+    
+    for (int i = 0; i < S; i++) { // calcula a heurística para o nó raíz
+        if (i != currBlank) { // se não é o espaço em branco
+            val = current->state[i] - 1; // enumera de 0 a (n2-1)-1 para o módulo ser de 0 a length-1
+            distance += abs((val % L) - (i % L)) + abs((val / L) - (i / L));
+        }
+    }
+    LB = current->distance = distance; // Único Lower Bound obtido neste algoritmo
+    if (distance == 0) { // primeiro estado já está solucionado
+        best = current; LB = UB = current->level; RESULT = FOUND;
+    }
+    else { // raíz não-solucionada sempre é promissora; cria os filhos da raíz (até 4)
+        int nextLevel = 1; // current->level + 1 = 0 + 1 = 1
+        // criação dos filhos, verificando quais ramificações são possíveis baseando-se nos movimentos legais
+        int nChildren = 0; // conta o número de filhos
+        int nextBlank, nextValue, delta, nextDistance; // calcula a heurística para ser usada na ordenação dos filhos (OTIMIZAÇÃO)
+        if (currBlank < DSL) { // pode ser movida para BAIXO
+            try {
+                nextBlank = currBlank + DOWN;
+                nextValue = current->state[nextBlank] - 1;
+                // diferença das distâncias de linhas na mudança (antes de mover - depois de mover)
+                delta = abs((nextBlank / L) - (nextValue / L)) - abs((currBlank / L) - (nextValue / L));
+                // com delta < 0, a distância aumentou, logo -delta/abs(delta)=-(-1)=+1; com > 0, a variação fica -(+1) = -1.
+                nextDistance = distance - (delta / abs(delta));
+
+                current->next = new Node{ NULL, nextLevel, nextBlank, nextDistance, DOWN, current, current->next };
+                nChildren++;
+            }
+            catch (const std::exception&) {
+                RESULT = MEMORYLIMIT;
+            }
+        }
+        if ((currBlank % L) != LL) { // pode ser movida para a DIREITA
+            try {
+                nextBlank = currBlank + RIGHT;
+                nextValue = current->state[nextBlank] - 1;
+                // diferença das distâncias de colunas na mudança (antes de mover - depois de mover)
+                delta = abs((nextBlank % L) - (nextValue % L)) - abs((currBlank % L) - (nextValue % L));
+                nextDistance = distance - (delta / abs(delta));
+
+                current->next = new Node{ NULL, nextLevel, nextBlank, nextDistance, RIGHT, current, current->next };
+                nChildren++;
+
+                // primeira possível decisão de ordem (máx. 2 filhos)
+                if (nChildren == 2 && current->next->next->distance < nextDistance) { // tem os 2 filhos (BAIXO e DIREITA)
+                    Node* CRIGHT = current->next, * CDOWN = current->next->next;
+                    CRIGHT->next = CDOWN->next; CDOWN->next = CRIGHT; current->next = CDOWN; // reordena para -> BX. -> DIR.
+                } // else: não tem outro filho ou este já é o melhor; não precisa reordenar
+            }
+            catch (const std::exception&) {
+                RESULT = MEMORYLIMIT;
+            }
+        }
+        if (currBlank >= L) { // pode ser movida para CIMA
+            try {
+                nextBlank = currBlank + UP;
+                nextValue = current->state[nextBlank] - 1;
+                // diferença das distâncias de linhas na mudança (antes de mover - depois de mover)
+                delta = abs((nextBlank / L) - (nextValue / L)) - abs((currBlank / L) - (nextValue / L));
+                nextDistance = distance - (delta / abs(delta));
+
+                current->next = new Node{ NULL, nextLevel, nextBlank, nextDistance, UP, current, current->next };
+                nChildren++;
+
+                // segunda possível decisão de ordem (máx. 3 filhos)
+                if (nChildren == 3) { // tem os 3 filhos (CIMA, BAIXO e DIREITA)
+                    Node* CUP = current->next, * CPREV1 = CUP->next, * CPREV2 = CPREV1->next;
+                    // ordena os três sem precisar saber quem é cada anterior
+                    if (CPREV2->distance < nextDistance) { // CIMA tem que virar o último
+                        CUP->next = CPREV2->next; CPREV2->next = CUP; current->next = CPREV1;
+                    }
+                    else if (CPREV1->distance < nextDistance) { // CIMA tem que estar no meio
+                        CUP->next = CPREV2; CPREV1->next = CUP; current->next = CPREV1;
+                    } // else: PREV1 < PREV2 garantido antes, então CIMA < ANT1 < ANT2 (como já está)
+                }
+                else if (nChildren == 2) { // tem este e exatamente 1 dos anteriores (ANTERIOR = BAIXO ou DIREITA)
+                    Node* CUP = current->next, * CPREV = CUP->next;
+                    // a distância já é trocada para estar no distance1
+                    if (CPREV->distance < nextDistance) { // ANTERIOR é melhor; troca para -> ANT. -> CIMA
+                        CUP->next = CPREV->next; CPREV->next = CUP; current->next = CPREV;
+                    } // else: ANTERIOR não é melhor, este é: não precisa reordenar
+                } // else: não tem outros filhos; não há o que reordernar
+            }
+            catch (const std::exception&) {
+                RESULT = MEMORYLIMIT;
+            }
+        }
+        if ((currBlank % L) != 0) { // pode ser movida para a ESQUERDA
+            try {
+                nextBlank = currBlank + LEFT;
+                nextValue = current->state[nextBlank] - 1;
+                // diferença das distâncias de colunas na mudança (antes de mover - depois de mover)
+                delta = abs((nextBlank % L) - (nextValue % L)) - abs((currBlank % L) - (nextValue % L));
+                nextDistance = distance - (delta / abs(delta));
+
+                current->next = new Node{ NULL, nextLevel, nextBlank, nextDistance, LEFT, current, current->next };
+                nChildren++;
+
+                //  terceira possível decisão de ordem (máx. 4 filhos, e apenas 3 depois que há movimento contrário cortado)
+                if (nChildren == 4) { // os quatro (este e todos os 3 acima) existem (isso ocorre apenas na raíz)
+                    Node* CLEFT = current->next, * CPREV1 = CLEFT->next, * CPREV2 = CPREV1->next, * CPREV3 = CPREV2->next;
+                    if (CPREV3->distance < nextDistance) { // quarto pior
+                        CLEFT->next = CPREV3->next; CPREV3->next = CLEFT; current->next = CPREV1;
+                    }
+                    else if (CPREV2->distance < nextDistance) { // terceiro pior
+                        CLEFT->next = CPREV3; CPREV2->next = CLEFT; current->next = CPREV1;
+                    }
+                    else if (CPREV1->distance < nextDistance) { // segundo pior
+                        CLEFT->next = CPREV2; CPREV1->next = CLEFT; current->next = CPREV1;
+                    }
+                }
+                else if (nChildren == 3) { // três filhos existem (este e outros 2, não importando quais são)
+                    Node* CLEFT = current->next, * CPREV1 = CLEFT->next, * CPREV2 = CPREV1->next;
+                    if (CPREV2->distance < nextDistance) {
+                        CLEFT->next = CPREV2->next; CPREV2->next = CLEFT; current->next = CPREV1;
+                    }
+                    else if (CPREV1->distance < nextDistance) {
+                        CLEFT->next = CPREV2; CPREV1->next = CLEFT; current->next = CPREV1;
+                    }
+                }
+                else if (nChildren == 2) { // dois filhos existem (este e algum outro)
+                    Node* CLEFT = current->next, * CPREV = CLEFT->next;
+                    if (CPREV->distance < nextDistance) { // ANTERIOR é melhor; troca para -> ANT. -> CIMA
+                        CLEFT->next = CPREV->next; CPREV->next = CLEFT; current->next = CPREV;
+                    } // else ANTERIOR não é melhor, este é; não reordena
+                }
+                // else: filho único; não há troca
+            }
+            catch (const std::exception&) {
+                RESULT = MEMORYLIMIT;
+            }
+        }
+        // vai para o próximo nó
+        current = current->next;
+    }
+
+    while (RESULT == 0 && count++ <= limit) { // laço de visita
         if (current == NULL) {  // pai e irmãos não-nulos sempre são visitados antes (SERIAL), então não há mais como encontrar solução
             if (best == NULL) RESULT = NOTFOUND;
             else RESULT = FOUND; // caso não tenha fechado LB=UB mas acabado de visitar todos os nós
         }
         else { // Nó existe e não foi visitado
-            int distance = 0; // heurística: distância de Manhattan (e indicador de solução)
-            int currBlank = 0, j, val;
-            while (parentState[currBlank] != S) { currBlank++; } // encontra posição do branco O(n2)
-            int moveBlank = currBlank + current->move; // nova posição do branco pelo movimento dado
+            int distance = current->distance, currBlank = current->blank, prevBlank = current->parent->blank;
 
             current->state = new int[S]; // como não foi inicializado pelo pai, inicializa aqui
-            // Copia o estado atual do pai, fazendo o movimento e já calculando a heurística O(n2)
-            for (int i = 0; i < S; i++) { // copia o estado pai já fazendo o movimento das duas peças para o estado filho
-                if (i == currBlank) { j = moveBlank; } // troca branco por aquele que está abaixo
-                else if (i == moveBlank) { j = currBlank; } // troca o que está abaixo pelo branco
+            for (int i = 0; i < S; i++) { // copia o estado pai já fazendo o movimento das duas peças para o estado atual O(n2)
+                if (i == currBlank) { j = prevBlank; }
+                else if (i == prevBlank) { j = currBlank; }
                 else { j = i; }
-                current->state[i] = parentState[j]; // faz a cópia com a movimentação
-                // adiciona à heurística a distância de peça atual
-                if (i != moveBlank) { // se não é o espaço em branco
-                    val = current->state[i] - 1; // enumera de 0 a (n2-1)-1 para o módulo ser de 0 a length-1
-                    distance += abs((val % L) - (i % L)) + abs((val / L) - (i / L));
-                }
+                current->state[i] = current->parent->state[j];
             }
 
             if (distance == 0) {// o estado está organizado: uma solução foi encontrada
@@ -137,159 +255,128 @@ int main(int argc, char* argv[])
                     if (UB == LB) { // esta É uma solução ótima; não é necessário procurar outra
                         RESULT = FOUND;
                     }
+                    else { // pode haver ainda melhores nós; continua com os próximos nós
+                        current = current->next;
+                    }
+                }
+                else { // este nó é apenas um de igual nível; continua procurando nos próximos nós
+                    current = current->next;
                 }
             }
             else if (current->level + distance < UB) { // estado atual tem filhos promissores
-                std::cout << "((" << count << ")) "; printChild(current);
                 int nextLevel = current->level + 1;
                 // criação dos filhos, verificando quais ramificações são possíveis baseando-se nos movimentos legais
-                int distance1 = -1, distance2 = -1, distance3 = -1, distance4 = -1, distanceAux;
-                int nextBlank, nextValue, delta; // calcula a heurística para ser usada na ordenação dos filhos (OTIMIZAÇÃO)
-                if (moveBlank < DSL && current->move != UP) { // pode ser movida para BAIXO
+                int nChildren = 0;
+                int nextBlank, nextValue, nextDistance, delta; // calcula a heurística para ser usada na ordenação dos filhos
+                if (currBlank < DSL && current->move != UP) { // pode ser movida para BAIXO
                     try {
-                        current->next = new Node{ NULL, nextLevel, DOWN, current, current->next };
-
-                        nextBlank = moveBlank + DOWN;
+                        nextBlank = currBlank + DOWN;
                         nextValue = current->state[nextBlank] - 1;
                         // diferença das distâncias de linhas na mudança (antes de mover - depois de mover)
-                        delta = abs((nextBlank / length) - (nextValue / length)) - abs((moveBlank / length) - (nextValue / length));
+                        delta = abs((nextBlank / L) - (nextValue / L)) - abs((currBlank / L) - (nextValue / L));
                         // com delta < 0, a distância aumentou, logo -delta/abs(delta)=-(-1)=+1; com > 0, a variação fica -(+1) = -1.
-                        distance1 = distance - (delta / abs(delta));
+                        nextDistance = distance - (delta / abs(delta));
 
-                        std::cout << "(DOWN) ";  printChild(current);
+                        current->next = new Node{ NULL, nextLevel, nextBlank, nextDistance, DOWN, current, current->next };
+                        nChildren++;
                     }
                     catch (const std::exception&) {
                         RESULT = MEMORYLIMIT; break;
                     }
                 }
-                if ((moveBlank % L) != LL && current->move != LEFT) { // pode ser movida para a DIREITA
+                if ((currBlank % L) != LL && current->move != LEFT) { // pode ser movida para a DIREITA
                     try {
-                        current->next = new Node{ NULL, nextLevel, RIGHT, current, current->next };
-
-                        nextBlank = moveBlank + RIGHT;
+                        nextBlank = currBlank + RIGHT;
                         nextValue = current->state[nextBlank] - 1;
                         // diferença das distâncias de colunas na mudança (antes de mover - depois de mover)
-                        delta = abs((nextBlank % length) - (nextValue % length)) - abs((moveBlank % length) - (nextValue % length));
-                        distance2 = distance - (delta / abs(delta));
+                        delta = abs((nextBlank % L) - (nextValue % L)) - abs((currBlank % L) - (nextValue % L));
+                        nextDistance = distance - (delta / abs(delta));
+
+                        current->next = new Node{ NULL, nextLevel, nextBlank, nextDistance, RIGHT, current, current->next };
+                        nChildren++;
 
                         // primeira possível decisão de ordem (máx. 2 filhos)
-                        if (distance1 != -1 && distance1 < distance2) { // tem os 2 filhos (BAIXO e DIREITA)
+                        if (nChildren == 2 && current->next->next->distance < nextDistance) { // tem os 2 filhos (BAIXO e DIREITA)
                             Node* CRIGHT = current->next, * CDOWN = current->next->next;
                             CRIGHT->next = CDOWN->next; CDOWN->next = CRIGHT; current->next = CDOWN; // troca para -> BX. -> DIR.
-                        }
-                        else { // não tem outro filho ou o atual DIREITA é o melhor (já está na ordem DIR. -> BX.); troca as dists.
-                            distanceAux = distance1; distance1 = distance2; distance2 = distanceAux;
-                        }
-
-                        std::cout << "(RIGHT) ";  printChild(current);
+                        } // else não tem outro filho ou o atual DIREITA é o melhor (já está na ordem DIR. -> BX.)
                     }
                     catch (const std::exception&) {
                         RESULT = MEMORYLIMIT; break;
                     }
                 }
-                if (moveBlank >= L && current->move != DOWN) { // pode ser movida para CIMA
+                if (currBlank >= L && current->move != DOWN) { // pode ser movida para CIMA
                     try {
-                        current->next = new Node{ NULL, nextLevel, UP, current, current->next };
-
-                        nextBlank = moveBlank + UP;
+                        nextBlank = currBlank + UP;
                         nextValue = current->state[nextBlank] - 1;
                         // diferença das distâncias de linhas na mudança (antes de mover - depois de mover)
-                        delta = abs((nextBlank / length) - (nextValue / length)) - abs((moveBlank / length) - (nextValue / length));
-                        distance3 = distance - (delta / abs(delta));
+                        delta = abs((nextBlank / L) - (nextValue / L)) - abs((currBlank / L) - (nextValue / L));
+                        nextDistance = distance - (delta / abs(delta));
+
+                        current->next = new Node{ NULL, nextLevel, nextBlank, nextDistance, UP, current, current->next };
+                        nChildren++;
 
                         // segunda possível decisão de ordem (máx. 3 filhos)
-                        if (distance2 != -1) { // tem os 3 filhos (CIMA, BAIXO e DIREITA)
+                        if (nChildren == 3) { // tem os 3 filhos (CIMA, BAIXO e DIREITA)
                             Node* CUP = current->next, * CPREV1 = CUP->next, * CPREV2 = CPREV1->next;
                             // ordena os três sem precisar saber quem é cada anterior
-                            if (distance2 < distance3) { // CIMA tem que virar o último
+                            if (CPREV2->distance < nextDistance) { // CIMA tem que virar o último
                                 CUP->next = CPREV2->next; CPREV2->next = CUP; current->next = CPREV1;
                             }
-                            else if (distance1 < distance3) { // CIMA tem que estar no meio
+                            else if (CPREV1->distance < nextDistance) { // CIMA tem que estar no meio
                                 CUP->next = CPREV2; CPREV1->next = CUP; current->next = CPREV1;
-                                distanceAux = distance2; distance2 = distance3; distance3 = distanceAux; // mantém 2 < 3
-                            }
-                            else { // PREV1 < PREV2 garantido antes, então CIMA < ANT1 < ANT2 (como já está); troca as distâncias
-                                distanceAux = distance2; distance2 = distance3; distance3 = distanceAux;
-                                distanceAux = distance1; distance1 = distance2; distance1 = distanceAux;
-                            }
+                            } // else: CIMA < ANT1 < ANT2 (como já está)
                         }
-                        else if (distance1 != -1) { // tem este e exatamente 1 dos anteriores (ANTERIOR = BAIXO ou DIREITA)
+                        else if (nChildren == 2) { // tem este e exatamente 1 dos anteriores (ANTERIOR = BAIXO ou DIREITA)
                             Node* CUP = current->next, * CPREV = CUP->next;
-                            distance2 = distance3; distance3 = -1; // move para a segunda distância
-                            // a distância já é trocada para estar no distance1
-                            if (distance1 < distance2) { // ANTERIOR é melhor; troca para -> ANT. -> CIMA
+                            if (CPREV->distance < nextDistance) { // ANTERIOR é melhor; troca para -> ANT. -> CIMA
                                 CUP->next = CPREV->next; CPREV->next = CUP; current->next = CPREV;
-                            }
-                            else { // ANTERIOR não é melhor; troca as distâncias
-                                distanceAux = distance1; distance1 = distance2; distance2 = distanceAux;
-                            }
-                        }
-                        else { // não tem outros filhos, só precisa mover para primeira distância
-                            distance1 = distance3; distance3 = -1;
-                        }
-
-                        std::cout << "(UP) ";  printChild(current);
+                            } // else: ANTERIOR não é melhor, este é; não precisa de reordenação
+                        } // else: filho único; não há o que reordenação
                     }
                     catch (const std::exception&) {
                         RESULT = MEMORYLIMIT; break;
                     }
                 }
-                if ((moveBlank % S) != 0 && current->move != RIGHT) { // pode ser movida para a ESQUERDA
+                if ((currBlank % L) != 0 && current->move != RIGHT) { // pode ser movida para a ESQUERDA
                     try {
-                        current->next = new Node{ NULL, nextLevel, LEFT, current, current->next };
-
-                        nextBlank = moveBlank + LEFT;
+                        nextBlank = currBlank + LEFT;
                         nextValue = current->state[nextBlank] - 1;
                         // diferença das distâncias de colunas na mudança (antes de mover - depois de mover)
-                        delta = abs((nextBlank % length) - (nextValue % length)) - abs((moveBlank % length) - (nextValue % length));
-                        distance4 = distance - (delta / abs(delta));
+                        delta = abs((nextBlank % L) - (nextValue % L)) - abs((currBlank % L) - (nextValue % L));
+                        nextDistance = distance - (delta / abs(delta));
 
-                        //  terceira possível decisão de ordem (máx. 4 filhos, e apenas 3 depois que há movimento contrário cortado)
-                        if (distance3 != -1) { // os quatro (este e todos os 3 acima) existem (isso ocorre apenas na raíz)
-                            Node* CLEFT = current->next, * CPREV1 = CLEFT->next, * CPREV2 = CPREV1->next, * CPREV3 = CPREV2->next;
-                            if (distance3 < distance4) { // quarto pior
-                                CLEFT->next = CPREV3->next; CPREV3->next = CLEFT; current->next = CPREV1;
-                            }
-                            else if (distance2 < distance4) { // terceiro pior
-                                CLEFT->next = CPREV3; CPREV2->next = CLEFT; current->next = CPREV1;
-                            }
-                            else if (distance1 < distance4) { // segundo pior
-                                CLEFT->next = CPREV2; CPREV1->next = CLEFT; current->next = CPREV1;
-                            }
-                        }
-                        else if (distance2 != -1) { // três filhos existem (este e outros 2, não importando quais são)
+                        current->next = new Node{ NULL, nextLevel, nextBlank, nextDistance, LEFT, current, current->next };
+                        nChildren++;
+
+                        //  terceira possível decisão de ordem (máx. 3 filhos, pois 1 dos filhos sempre é cortado pelo move check)
+                        if (nChildren == 3) { // três filhos existem (este e outros 2, não importando quais são)
                             Node* CLEFT = current->next, * CPREV1 = CLEFT->next, * CPREV2 = CPREV1->next;
-                            if (distance2 < distance4) {
+                            if (CPREV2->distance < nextDistance) {
                                 CLEFT->next = CPREV2->next; CPREV2->next = CLEFT; current->next = CPREV1;
                             }
-                            else if (distance1 < distance4) {
+                            else if (CPREV1->distance < nextDistance) {
                                 CLEFT->next = CPREV2; CPREV1->next = CLEFT; current->next = CPREV1;
-                            }
-                            // else: mantém como está; não troca as distâncias pois não há mais cálculo com elas
+                            } // else: mantém como está
                         }
-                        else if (distance1 != -1) { // dois filhos existem (este e algum outro)
+                        else if (nChildren == 2) { // dois filhos existem (este e algum outro)
                             Node* CLEFT = current->next, * CPREV = CLEFT->next;
-                            if (distance1 < distance4) { // ANTERIOR é melhor; troca para -> ANT. -> CIMA
+                            if (CPREV->distance < nextDistance) { // ANTERIOR é melhor; troca para -> ANT. -> CIMA
                                 CLEFT->next = CPREV->next; CPREV->next = CLEFT; current->next = CPREV;
-                            }
-                            // else ANTERIOR não é melhor; não precisa trocar as distâncias porque não são mais usadas
-                        }
-                        // else: filho único; não troca porque não há mais cálculo com as distâncias
-
-                        std::cout << "(LEFT) ";  printChild(current);
+                            } // else ANTERIOR não é melhor, este é; não reordena
+                        } // else: filho único; não troca porque não há mais cálculo com as distâncias
                     }
                     catch (const std::exception&) {
                         RESULT = MEMORYLIMIT; break;
                     }
                 }
-                // vai para o próximo nó
-                current = current->next; parentState = current->parent->state;
+                current = current->next; // vai para o próximo nó
             }
-            else { // (level+distance>=UB): estado atual não é solução ótima nem tem filhos melhores 
-                current = current->next; parentState = current->parent->state; // então vai direto ao próximo nó
+            else { // (level+distance>=UB): estado atual não é solução ótima nem tem filhos promissores (que possam ser ótimos) 
+                current = current->next; // então "poda": vai direto ao próximo nó
             }
         }
-    } while (RESULT == 0 && count++ <= limit);
+    }
     const auto end = std::chrono::steady_clock::now();
     const auto time = end - start;
     std::cout << "Fim do algoritmo! (" << time.count() << " nanossegundos)" << std::endl; // fim do BnB
@@ -329,17 +416,19 @@ int main(int argc, char* argv[])
             else { // o puzzle filho não foi instanciado porque nem precisou
                 puzzleRes << "[NULL]\n";
             }
-            puzzleRes << node;
+            puzzleRes << "c:" << node;
             if (node == best) puzzleRes << "*";
-            if (node == current) puzzleRes << "!!";
-            puzzleRes << "\n" << node->level << "\n";
+            if (node == current) puzzleRes << "!";
+            puzzleRes << "\nl:" << node->level;
+            puzzleRes << "\nb:" << node->blank+1;
+            puzzleRes << "\nd:" << node->distance << "\n";
             if (node->move == 0) puzzleRes << "START";
             else if (node->move == L) puzzleRes << "DOWN";
             else if (node->move == 1) puzzleRes << "RIGHT";
             else if (node->move == -L) puzzleRes << "UP";
             else if (node->move == -1) puzzleRes << "LEFT";
-            puzzleRes << "\n" << node->parent;
-            puzzleRes << "\n" << node->next << "\n";
+            puzzleRes << "\np:" << node->parent;
+            puzzleRes << "\nn:" << node->next << "\n";
             node = node->next;
         }
         // fecha o arquivo de saída
