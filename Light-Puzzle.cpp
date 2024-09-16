@@ -88,9 +88,8 @@ int main(int argc, char* argv[])
     Node* current = root; // a cada visita o nó atual mudará
     Node* best = NULL; // folha do melhor caminho
 
-    int UB = INT_MAX, LB = 0; // limites superior (Upper Bound) e inferior (Lower Bound)
+    int UB = 0, LB = 0; // limites superior (Upper Bound) e inferior (Lower Bound)
     int RESULT = 0; // guarda um dos casos de solução (definidos nas macros no início)
-    int count = 0, limit = 32 * 1024;
 
     const auto start = std::chrono::steady_clock::now(); // marcador de tempo de início do algoritmo a partir dos passos de laço
     
@@ -104,6 +103,7 @@ int main(int argc, char* argv[])
         }
     }
     LB = current->distance = distance; // Único Lower Bound obtido neste algoritmo
+    UB = LB + (LB / 4); // estimativa; uma heurística melhor é necessária
     if (distance == 0) { // primeiro estado já está solucionado
         best = current; LB = UB = current->level; RESULT = FOUND;
     }
@@ -232,7 +232,8 @@ int main(int argc, char* argv[])
         current = current->next;
     }
 
-    while (RESULT == 0 && count++ <= limit) { // laço de visita
+
+    while (RESULT == 0) { // laço de visita
         if (current == NULL) {  // pai e irmãos não-nulos sempre são visitados antes (SERIAL), então não há mais como encontrar solução
             if (best == NULL) RESULT = NOTFOUND;
             else RESULT = FOUND; // caso não tenha fechado LB=UB mas acabado de visitar todos os nós
@@ -434,6 +435,48 @@ int main(int argc, char* argv[])
         // fecha o arquivo de saída
         puzzleRes.close();
         std::cout << "Fim da escrita no arquivo de saida." << std::endl;
+    }
+    if (argc >= 4 && best != NULL) { // se um segundo arquivo de saída for fornecido, para informações do melhor nó:
+        char* outputname2 = argv[3];
+        std::ofstream puzzleBest(outputname2, std::ofstream::trunc);
+
+        puzzleBest << "Caminho Inverso do Melhor à Raíz" << "\n";
+        puzzleBest << "LB: " << LB << " ; UB: " << UB << "\n";
+
+        // repete a escrita para a árvore inteira, a partir da raíz
+        Node* node = best;
+        while (node != NULL) {
+            int resValue; // guarda cada número do puzzle em cada iteração
+            if (node->state != NULL) for (int i = 0; i < L; i++) {
+                int row = i * L;
+                for (int j = 0; j < L; j++) {
+                    resValue = node->state[row + j];
+                    if (resValue == size) { puzzleBest << " "; } // imprime o espaço vazio (representado por size)
+                    else { puzzleBest << resValue; } // imprime o número da posição atual
+                    if (j < LL) puzzleBest << ",";
+                }
+                puzzleBest << "\n";
+            }
+            else { // o nó não foi instanciado 
+                puzzleBest << "[NULL]\n";
+            }
+            puzzleBest << "c:" << node;
+            if (node == best) puzzleBest << "*";
+            puzzleBest << "\nl:" << node->level;
+            puzzleBest << "\nb:" << node->blank + 1;
+            puzzleBest << "\nd:" << node->distance << "\n";
+            if (node->move == 0) puzzleBest << "START";
+            else if (node->move == L) puzzleBest << "DOWN";
+            else if (node->move == 1) puzzleBest << "RIGHT";
+            else if (node->move == -L) puzzleBest << "UP";
+            else if (node->move == -1) puzzleBest << "LEFT";
+            puzzleBest << "\np:" << node->parent;
+            puzzleBest << "\nn:" << node->next << "\n\n";
+            node = node->parent;
+        }
+        // fecha o arquivo de saída
+        puzzleBest.close();
+        std::cout << "Fim da escrita no segundo arquivo de saida." << std::endl;
     }
 
     std::cout << "Limpando memoria..." << std::endl;
